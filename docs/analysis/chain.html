@@ -1,0 +1,105 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>logdissect 过滤器链 · tsdata 字段读写</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171e2e; --ink: #e7ecf5; --muted: #93a0b8;
+    --line: #2b3650; --forward: #4ea1ff; --reverse: #ff9f43;
+    --time: #7ee787; --stage: #b39ddb; --bug: #ff5c7a; --accent: #4ea1ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: var(--bg); color: var(--ink);
+  }
+  header {
+    position: fixed; top: 0; left: 0; right: 0; height: 52px; z-index: 5;
+    display: flex; align-items: center; gap: 14px; padding: 0 20px;
+    background: rgba(15,20,32,.94); border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header a { color: var(--accent); text-decoration: none; font-size: 12px; margin-left: auto; }
+  .wrap { display: flex; margin-top: 52px; align-items: flex-start; }
+  .chain-col { width: 350px; flex: 0 0 350px; padding: 18px 14px 40px; border-right: 1px solid var(--line); }
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0 0 16px 6px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .stage {
+    border: 1px solid var(--stage); background: rgba(179,157,219,.10);
+    color: var(--ink); border-radius: 8px; padding: 8px 12px; margin: 0 auto;
+    width: 278px; text-align: center; font-size: 13px;
+  }
+  .stage small { display: block; color: var(--muted); font-weight: 400; }
+  .arrow { width: 2px; height: 16px; margin: 0 auto; background: var(--line); position: relative; }
+  .arrow::after {
+    content: ""; position: absolute; bottom: -1px; left: 50%; transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: var(--line);
+  }
+  .filter-group { width: 278px; margin: 0 auto; }
+  .node {
+    position: relative; width: 100%; text-align: left; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    border-radius: 8px; padding: 8px 12px; font: inherit; display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px; transition: border-color .12s, box-shadow .12s;
+  }
+  .node:hover { border-color: var(--accent); }
+  .node:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .node.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .node .idx {
+    width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; font-size: 11px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: #22304a; color: var(--muted);
+  }
+  .node.forward .idx { background: rgba(78,161,255,.18); color: var(--forward); }
+  .node.reverse .idx { background: rgba(255,159,67,.16); color: var(--reverse); }
+  .node.time .idx { background: rgba(126,231,135,.15); color: var(--time); }
+  .node .nm { font-family: Consolas, monospace; }
+  .node .ds { color: var(--muted); font-size: 11px; margin-left: auto; text-align: right; }
+  .node .bugtag {
+    position: absolute; top: -8px; right: -6px; background: var(--bug); color: #1a0509;
+    font-size: 10px; font-weight: 700; border-radius: 9px; padding: 1px 7px;
+  }
+  .sep { color: var(--muted); font-size: 11px; text-align: center; margin: 12px 0 8px; letter-spacing: .12em; }
+  .detail-col { flex: 1 1 auto; padding: 22px 26px; min-width: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; max-width: 780px; }
+  .card h2 { margin: 0 0 2px; font-size: 19px; font-family: Consolas, monospace; }
+  .card .kind { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .pill { display: inline-block; border-radius: 999px; padding: 1px 10px; font-size: 11px; margin-right: 6px; }
+  .pill.fwd { background: rgba(78,161,255,.15); color: var(--forward); }
+  .pill.rev { background: rgba(255,159,67,.15); color: var(--reverse); }
+  .pill.tm { background: rgba(126,231,135,.13); color: var(--time); }
+  .pill.bg { background: rgba(255,92,122,.16); color: var(--bug); }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  code { font-family: Consolas, monospace; }
+  .rw-read { color: var(--forward); }
+  .rw-none { color: var(--muted); }
+  pre {
+    background: #0b101b; border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    overflow-x: auto; font-size: 12.5px; color: #cdd9ee; white-space: pre-wrap; word-break: break-all;
+  }
+  .bugbox { border: 1px solid var(--bug); background: rgba(255,92,122,.08); border-radius: 8px; padding: 10px 14px; margin: 6px 0 14px; }
+  .bugbox h3 { margin: 0 0 6px; font-size: 13px; color: var(--bug); }
+  .hint { color: var(--muted); }
+  .kv { display: grid; grid-template-columns: 96px 1fr; gap: 4px 12px; margin-bottom: 14px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>logdissect 过滤器链</h1>
+  <span class="sub">argparse → LogDissectCore.run_filters() · 点击任一过滤器查看 tsdata 字段读写</span>
+  <a href="README.md">分析文档索引</a>
+</header>
+<div class="wrap">
+  <div class="chain-col" id="chain"></div>
+  <div class="detail-col" id="detail"></div>
+</div>
+<script src="chain.js"></script>
+</body>
+</html>
