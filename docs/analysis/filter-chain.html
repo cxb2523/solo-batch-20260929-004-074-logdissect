@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>logdissect 过滤器链路图</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#171e2e; --panel2:#1f2840; --line:#2c3854;
+    --fg:#e6ecf8; --muted:#94a3c4; --pos:#3d9df0; --neg:#ef5d7a;
+    --time:#f2b544; --bug:#ff6b6b; --ok:#3fd08c; --accent:#7aa2ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.55 "Segoe UI",system-ui,-apple-system,sans-serif;
+       background:var(--bg);color:var(--fg)}
+  header{padding:18px 24px;border-bottom:1px solid var(--line);
+         background:linear-gradient(180deg,#141b2b,#0f1420)}
+  header h1{margin:0 0 4px;font-size:19px}
+  header p{margin:0;color:var(--muted);font-size:13px}
+  .wrap{display:grid;grid-template-columns:minmax(560px,1.35fr) minmax(340px,1fr);
+        gap:0;min-height:calc(100vh - 66px)}
+  @media (max-width:980px){.wrap{grid-template-columns:1fr}}
+  .chain-pane{padding:22px 24px;overflow:auto;border-right:1px solid var(--line)}
+  .detail-pane{padding:22px 24px;background:var(--panel);overflow:auto}
+  .legend{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 14px;font-size:12px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .dot.pos{background:var(--pos)} .dot.neg{background:var(--neg)} .dot.time{background:var(--time)}
+  svg{width:100%;height:auto;display:block}
+  .node rect{rx:9;ry:9;stroke-width:1.5;cursor:pointer;transition:stroke-width .12s,filter .12s}
+  .node text{font:600 13px "Segoe UI",sans-serif;fill:var(--fg);pointer-events:none}
+  .node text.sub{font:500 10px "Segoe UI",sans-serif;fill:var(--muted)}
+  .node rect.kind-pos{fill:#16263c;stroke:var(--pos)}
+  .node rect.kind-neg{fill:#2c1826;stroke:var(--neg)}
+  .node rect.kind-time{fill:#2e2614;stroke:var(--time)}
+  .node:hover rect{stroke-width:3}
+  .node.selected rect{stroke-width:3.5;stroke:#fff;filter:drop-shadow(0 0 6px rgba(122,162,255,.8))}
+  .edge{stroke:#55648c;stroke-width:1.8;fill:none;marker-end:url(#arrow)}
+  .edgelabel{font:500 10px "Segoe UI",sans-serif}
+  .sourcebox{fill:#101626;stroke:#3a4773}
+  .placeholder{color:var(--muted);border:1px dashed var(--line);border-radius:10px;
+       padding:26px;text-align:center}
+  .dtag{display:inline-block;font-size:11px;padding:2px 9px;border-radius:20px;margin-bottom:10px;font-weight:700}
+  .dtag.pos{background:#16314d;color:var(--pos);border:1px solid var(--pos)}
+  .dtag.neg{background:#371a27;color:var(--neg);border:1px solid var(--neg)}
+  .dtag.time{background:#33290f;color:var(--time);border:1px solid var(--time)}
+  h2{font-size:17px;margin:2px 0 2px}
+  .meta{color:var(--muted);font-size:12px;margin-bottom:14px}
+  section.block{background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+       padding:12px 14px;margin:12px 0}
+  section.block h3{margin:0 0 8px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600;font-size:12px}
+  code,.mono{font-family:"Cascadia Code",Consolas,monospace;font-size:12.5px}
+  .rchip{display:inline-block;background:#142742;color:#8fc4ff;border:1px solid #24507f;
+       border-radius:6px;padding:1px 7px;margin:2px 4px 2px 0}
+  .nonechip{background:#222b40;color:var(--muted);border:1px solid var(--line)}
+  pre{background:#0c1120;border:1px solid var(--line);border-radius:8px;padding:10px;
+       overflow:auto;font:12px/1.5 Consolas,monospace;color:#cfe0ff}
+  .bugbox{border:1px solid var(--bug);background:#2c151c;border-radius:10px;padding:12px 14px;margin:12px 0}
+  .bugbox h3{color:var(--bug);margin:0 0 6px;font-size:13px}
+  .okbox{border:1px solid var(--ok);background:#122a20;border-radius:10px;padding:10px 14px;margin:12px 0}
+  .cmd{cursor:pointer}
+  .hint{font-size:11.5px;color:var(--muted);margin-top:6px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>logdissect 过滤器链：从 argv 到 finalized_data</h1>
+  <p>执行次序 = <code>sorted(filters.__filters__)</code>（core.py:199），run_filters 按此序把上一节点返回 dict 喂给下一节点（core.py:100-103）。点击节点查看它对 tsdata 各字段的读写。</p>
+</header>
+<div class="wrap">
+  <div class="chain-pane">
+    <div class="legend">
+      <span><i class="dot pos"></i>正向（保留匹配）</span>
+      <span><i class="dot neg"></i>反向（剔除匹配）</span>
+      <span><i class="dot time"></i>时间（last / range）</span>
+      <span>→ 数据流向；数字为链上槽位</span>
+    </div>
+    <svg id="chart" viewBox="0 0 900 720" role="img" aria-label="过滤器执行链路图"></svg>
+    <p class="hint">箭头与 docs/analysis/01-chain-ordering.md §1 表格逐一对应；节点颜色、槽位号、正反向分组均一致。</p>
+  </div>
+  <div class="detail-pane" id="detail">
+    <div class="placeholder">点击左侧任一过滤器节点，<br>这里会显示它读取 / 写入的 tsdata 字段、短路与缺字段行为、现存缺陷和手工复现命令。</div>
+  </div>
+</div>
+<script>
+"use strict";
+// 与 docs/analysis/01-chain-ordering.md、03-field-matrix.md 保持一致的数据。
+// kind: pos=正向保留, neg=反向剔除, time=时间过滤
+var CHAIN = [
+ {key:"dhost", slot:1, kind:"pos", cli:"--dhost", dest:"dhost",
+  read:["dest_host"], readNote:"判断 entry['dest_host'] 是否 ∈ values（OR）",
+  lines:"dhost.py:50-53", short:"dhost.py:37-39 未给 --dhost 时 return data",
+  miss:"丢弃（无 else 分支）", multi:"多值为 OR，命中任一值即保留",
+  writes:[],
+  logic:"对每条 entry：若含 dest_host 且值 ∈ values 则 append；否则该行消失。",
+  bug:null,
+  cmd:"python logdissect.py --dhost x tests/files/exsyslog",
+  expect:"syslog 无 dest_host 字段 → 0 行（缺字段行被丢）"},
+ {key:"grep", slot:2, kind:"pos", cli:"--grep", dest:"pattern (action=append)",
+  read:["raw_text"], readNote:"re.match 编译后的正则作用于 entry['raw_text']",
+  lines:"grep.py:51-59", short:"grep.py:38-40 未给 --grep 时 return data",
+  miss:"raw_text 始终存在，无缺字段问题", multi:"多 pattern 为 OR，命中即 break（条目级短路）",
+  writes:[],
+  logic:"为每个 pattern 编译 .*(PAT).*；遍历 entry，任一 pattern 匹配就 append 并 break。",
+  bug:null,
+  cmd:"python logdissect.py --grep dbus tests/files/exsyslog",
+  expect:"3 行含 dbus"},
+ {key:"last", slot:3, kind:"time", cli:"--last 5m|3h|2d|...", dest:"last",
+  read:["numeric_date_stamp_utc"], readNote:"去掉微秒小数后 int() 与当前 UTC 起点比较",
+  lines:"last.py:72-79", short:"last.py:39-41 未给 --last 时 return data",
+  miss:"缺 numeric_date_stamp_utc 的行被跳过", multi:"单值；单位 s/m/h/d",
+  writes:[],
+  logic:"ourstart=utcnow()-Δ；dstamp>=ourstart 才保留。只读 UTC 戳，不支持本地戳。",
+  bug:null,
+  cmd:"python logdissect.py --last 10000d tests/files/exsyslog",
+  expect:"样本时间 Feb 2026，10000 天窗口覆盖 → 10 行；--last 1s → 0 行"},
+ {key:"process", slot:4, kind:"pos", cli:"--process", dest:"process",
+  read:["source_process"], readNote:"entry['source_process'] ∈ values",
+  lines:"process.py:50-53", short:"process.py:37-39 return data",
+  miss:"丢弃（无 else）", multi:"多值 OR", writes:[],
+  logic:"含 source_process 且值命中即保留。", bug:null,
+  cmd:"python logdissect.py --process CRON tests/files/exsyslog",
+  expect:"1 行 CRON"},
+ {key:"protocol", slot:5, kind:"pos", cli:"--protocol", dest:"protocol",
+  read:["protocol"], readNote:"entry['protocol'] ∈ values",
+  lines:"protocol.py:50-53", short:"protocol.py:37-39 return data",
+  miss:"丢弃（无 else）", multi:"多值 OR", writes:[],
+  logic:"含 protocol 且值命中即保留（tcpdump 等 parser 才有该字段）。", bug:null,
+  cmd:"python logdissect.py --protocol TCP tests/files/exsyslog",
+  expect:"syslog 无 protocol → 0 行"},
+ {key:"range", slot:6, kind:"time", cli:"--range A-B [--utc]", dest:"range, utc",
+  read:["numeric_date_stamp","numeric_date_stamp_utc"],
+  readNote:"默认读本地 numeric_date_stamp；--utc 读 numeric_date_stamp_utc",
+  lines:"range.py:56-80", short:"range.py:39-41 未给 --range 时 return data",
+  miss:"缺对应戳的行被跳过", multi:"闭区间 [first,last]，两端 ljust(14,'0')",
+  writes:[],
+  logic:"first/last 由 'YYYYMMDDhhmm-YYYYMMDDhhmm' 拆出；dstamp 落在区间内保留。",
+  bug:"range.py:60-61 的 'numeric_date_stamp_utc' in entry 判断重复写了两遍（冗余，无害）。",
+  cmd:"python logdissect.py --range 202602272130-202602272131 tests/files/exsyslog",
+  expect:"21:30 这一分钟共 8 行"},
+ {key:"rdhost", slot:7, kind:"neg", cli:"--rdhost", dest:"rdhost",
+  read:["dest_host"], readNote:"entry['dest_host'] NOT IN values 才保留",
+  lines:"rdhost.py:50-55", short:"rdhost.py:37-39 return data",
+  miss:"保留（有 else：缺字段行 append）", multi:"多值为 NOT IN", writes:[],
+  logic:"字段存在且不匹配→保留；字段缺失→走 else 也保留；只有值命中才剔除。",
+  bug:"self.name 被写成 'rdest'（rdhost.py:28），仅影响人类可读名，不影响链序。",
+  cmd:"python logdissect.py --rdhost x tests/files/exsyslog",
+  expect:"syslog 无 dest_host → 10 行（缺字段行被留，与 dhost 相反）"},
+ {key:"rgrep", slot:8, kind:"neg", cli:"--rgrep", dest:"rpattern",
+  read:["raw_text"], readNote:"设计上应对每个 pattern 做 re.match；实现把整个 list 塞进了正则",
+  lines:"rgrep.py:51-62", short:"rgrep.py:38-40 未给 --rgrep 时 return data",
+  miss:"raw_text 始终存在", multi:"设计为多 pattern 任一命中即剔除（无 break，但结果等价）",
+  writes:[],
+  logic:"设计：命中任一 pattern 的行剔除，其余 append。实际：正则被污染（见缺陷）。",
+  bug:"rgrep.py:53 re.compile(r'.*({}).*'.format(args.rpattern)) 把整个 list 格式化进正则：单参数得到字符类 ['dbus']、多参数得到字符类 ['dbus', 'x']，都命中几乎所有行→全剔；只有全大写之类罕见 pattern 会漏过部分行。应改为用循环变量 rpat。",
+  cmd:"python logdissect.py --rgrep dbus tests/files/exsyslog",
+  expect:"期望补集 7 行，实际 0 行"},
+ {key:"rprocess", slot:9, kind:"neg", cli:"--rprocess", dest:"rprocess",
+  read:["source_process"], readNote:"source_process NOT IN values 才保留",
+  lines:"rprocess.py:50-55", short:"rprocess.py:38-40 return data",
+  miss:"保留（else）", multi:"NOT IN", writes:[],
+  logic:"不匹配或缺字段都保留，仅值命中剔除。", bug:null,
+  cmd:"python logdissect.py --rprocess CRON tests/files/exsyslog",
+  expect:"9 行（健康补集）"},
+ {key:"rprotocol", slot:10, kind:"neg", cli:"--rprotocol", dest:"rprotocol",
+  read:["protocol"], readNote:"protocol NOT IN values 才保留",
+  lines:"rprotocol.py:50-55", short:"rprotocol.py:38-40 return data",
+  miss:"保留（else）", multi:"NOT IN", writes:[],
+  logic:"不匹配或缺字段保留，值命中剔除。", bug:null,
+  cmd:"python logdissect.py --rprotocol TCP tests/files/exsyslog",
+  expect:"syslog 无 protocol → 10 行（缺字段保留）"},
+ {key:"rshost", slot:11, kind:"neg", cli:"--rshost", dest:"rshost",
+  read:["source_host"], readNote:"source_host NOT IN values 才保留",
+  lines:"rshost.py:50-54", short:"rshost.py:38-40 return data",
+  miss:"保留（else）", multi:"NOT IN", writes:[],
+  logic:"不匹配或缺字段保留，值命中剔除。", bug:null,
+  cmd:"python logdissect.py --rshost shade tests/files/exsyslog",
+  expect:"syslog 用 log_source 不是 source_host → 10 行（缺字段保留）"},
+ {key:"rsource", slot:12, kind:"neg", cli:"--rsource", dest:"rsource",
+  read:["log_source（设计意图）"], readNote:"应为 'log_source' in entry.keys()，实际写成 in entry.keys",
+  lines:"rsource.py:50-54", short:"rsource.py:37-39 return data",
+  miss:"设计为 else 保留；实际在成员判断处崩溃", multi:"NOT IN args.rsource（注意用的是 args 而非 values）",
+  writes:[],
+  logic:"设计：log_source 不命中或缺字段保留，命中剔除。实际：启用即抛 TypeError。",
+  bug:"rsource.py:51 'log_source' in entry.keys 对内置绑定方法做成员判断 → TypeError: argument of type 'builtin_function_or_method' is not iterable，作业在槽位 12 崩溃，后续 shost/source 不再执行。另 line 52 用 args.rsource 而非循环外的 values。",
+  cmd:"python logdissect.py --rsource shade tests/files/exsyslog",
+  expect:"Traceback 终止于 rsource.py:51，exit code 1"},
+ {key:"shost", slot:13, kind:"pos", cli:"--shost", dest:"shost",
+  read:["source_host"], readNote:"source_host ∈ values",
+  lines:"shost.py:50-53", short:"shost.py:37-39 return data",
+  miss:"丢弃（无 else）", multi:"多值 OR", writes:[],
+  logic:"含 source_host 且值命中保留。", bug:null,
+  cmd:"python logdissect.py --shost shade tests/files/exsyslog",
+  expect:"syslog 无 source_host → 0 行（对照 --source shade 为 10 行）"},
+ {key:"source", slot:14, kind:"pos", cli:"--source", dest:"source",
+  read:["log_source"], readNote:"entry['log_source'] ∈ values",
+  lines:"source.py:50-53", short:"source.py:37-39 return data",
+  miss:"丢弃（无 else）", multi:"多值 OR", writes:[],
+  logic:"含 log_source 且值命中保留。syslog 正则把主机名捕获进 log_source。", bug:null,
+  cmd:"python logdissect.py --source shade tests/files/exsyslog",
+  expect:"10 行（log_source == shade）"}
+];
+var SVGNS = "http://www.w3.org/2000/svg";
+var chart = document.getElementById("chart");
+var detail = document.getElementById("detail");
+var nodeRefs = {};
+
+function el(name, attrs, parent){
+  var e = document.createElementNS(SVGNS, name);
+  for (var k in attrs){ e.setAttribute(k, attrs[k]); }
+  if (parent){ parent.appendChild(e); }
+  return e;
+}
+
+// 布局：两列蛇形，箭头从 finalized_data 依次贯穿 14 个节点
+var cols = [70, 490];
+var rowH = 84;
+var boxW = 340, boxH = 58;
+
+function draw(){
+  // 箭头标记
+  var defs = el("defs", {}, chart);
+  var marker = el("marker", {id:"arrow", viewBox:"0 0 10 10", refX:"9", refY:"5",
+      markerWidth:"7", markerHeight:"7", orient:"auto-start-reverse"}, defs);
+  el("path", {d:"M 0 0 L 10 5 L 0 10 z", fill:"#55648c"}, marker);
+
+  // 起点 / 终点
+  drawTerminal(70, 24, "finalized_data（merge_logs 产出，仅 entries）");
+  var positions = [];
+  CHAIN.forEach(function(n, i){
+    var row = Math.floor(i/2);
+    var col = (i % 2 === 0) ? 0 : 1;
+    var x = cols[col];
+    var y = 96 + row*rowH;
+    positions.push({x:x, y:y});
+    drawNode(n, x, y);
+  });
+
+  // 从起点到节点1
+  edge(positions[0].x + boxW/2, 24+44, positions[0].x + boxW/2, positions[0].y, "input");
+
+  // 节点间连线（含蛇形换行）
+  for (var i=0; i<positions.length-1; i++){
+    var a = positions[i], b = positions[i+1];
+    var ax, ay, bx, by;
+    if (a.x === b.x){
+      // 同列纵向
+      ax = a.x + boxW/2; ay = a.y + boxH;
+      bx = b.x + boxW/2; by = b.y;
+      edge(ax, ay, bx, by, CHAIN[i].key + "→" + CHAIN[i+1].key);
+    } else {
+      // 换行：左列到右列（同一行，水平），或右列到下一左列
+      if (b.x > a.x){
+        ax = a.x + boxW; ay = a.y + boxH/2;
+        bx = b.x; by = b.y + boxH/2;
+      } else {
+        // 右列下行到左列下一行：走折线
+        ax = a.x + boxW/2; ay = a.y + boxH;
+        var midY = (a.y + boxH + b.y)/2;
+        polyEdge(a.x+boxW/2, a.y+boxH, a.x+boxW/2, midY,
+                 b.x+boxW/2, midY, b.x+boxW/2, b.y);
+        continue;
+      }
+      edge(ax, ay, bx, by, CHAIN[i].key + "→" + CHAIN[i+1].key);
+    }
+  }
+
+  // 终点
+  var lastPos = positions[positions.length-1];
+  var endY = lastPos.y + rowH;
+  drawTerminal(70, endY, "run_output（终端打印 raw_text / --linejson / --sojson / --log）");
+  // 节点14(右列) → 终点(左列)
+  polyEdge(lastPos.x+boxW/2, lastPos.y+boxH,
+           lastPos.x+boxW/2, endY-30,
+           70+boxW/2, endY-30, 70+boxW/2, endY);
+}
+
+function edge(x1,y1,x2,y2,label){
+  el("line", {"class":"edge", x1:x1, y1:y1, x2:x2, y2:y2}, chart);
+}
+function polyEdge(){
+  var pts = [];
+  for (var i=0;i<arguments.length;i+=2){ pts.push(arguments[i]+","+arguments[i+1]); }
+  el("polyline", {"class":"edge", points:pts.join(" "), fill:"none"}, chart);
+}
+
+function drawTerminal(x,y,label){
+  var g = el("g", {}, chart);
+  el("rect", {x:x, y:y, width:boxW, height:44, rx:8, ry:8,
+      fill:"#101a2e", stroke:"#41527f", "stroke-width":1.3}, g);
+  var t = el("text", {x:x+boxW/2, y:y+27, "text-anchor":"middle",
+      "font":"600 12px Segoe UI", fill:"#bcd0f5"}, g);
+  t.textContent = label;
+}
+
+function drawNode(n, x, y){
+  var g = el("g", {"class":"node", "data-key":n.key}, chart);
+  el("rect", {"class":"kind-"+n.kind, x:x, y:y, width:boxW, height:boxH}, g);
+  var slot = el("text", {x:x+12, y:y+22, "text-anchor":"start"}, g);
+  slot.setAttribute("class","sub");
+  slot.textContent = "#" + n.slot + "  " + n.cli;
+  var title = el("text", {x:x+12, y:y+43, "text-anchor":"start"}, g);
+  title.textContent = n.key;
+  var kindLabel = {pos:"正向保留", neg:"反向剔除", time:"时间窗"}[n.kind];
+  var sub = el("text", {x:x+boxW-12, y:y+43, "text-anchor":"end"}, g);
+  sub.setAttribute("class","sub");
+  sub.textContent = kindLabel;
+  g.addEventListener("click", function(){ select(n.key); });
+  nodeRefs[n.key] = g;
+}
+
+function esc(s){
+  return String(s).replace(/[&<>"]/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];
+  });
+}
+
+function select(key){
+  var n = null;
+  for (var i=0;i<CHAIN.length;i++){ if (CHAIN[i].key === key){ n = CHAIN[i]; } }
+  if (!n){ return; }
+  Object.keys(nodeRefs).forEach(function(k){
+    nodeRefs[k].classList.toggle("selected", k === key);
+  });
+  renderDetail(n);
+}
+
+function chips(fields, cls){
+  if (!fields || !fields.length){
+    return '<span class="rchip nonechip">（不读取任何 entry 字段）</span>';
+  }
+  return fields.map(function(f){
+    return '<span class="rchip '+cls+'">'+esc(f)+'</span>';
+  }).join("");
+}
+
+function renderDetail(n){
+  var kindText = {pos:["pos","正向过滤器（保留匹配行）"],
+                  neg:["neg","反向过滤器（剔除匹配行）"],
+                  time:["time","时间过滤器"]}[n.kind];
+  var writeRows = n.writes.length
+      ? n.writes.map(function(w){return "<li>"+esc(w)+"</li>";}).join("")
+      : "<li>不写任何 entry 字段（只读选择；entry dict 为跨过滤器共享引用，见 02 篇）</li>";
+  var bug = n.bug
+      ? '<div class="bugbox"><h3>⚠ 现存缺陷 / 注意</h3><div>'+esc(n.bug)+'</div></div>'
+      : '<div class="okbox"><h3 style="margin:0;color:var(--ok);font-size:13px">✓ 行为与“正反向互补”直觉一致（无崩溃型缺陷）</h3></div>';
+  detail.innerHTML =
+    '<span class="dtag '+kindText[0]+'">'+kindText[1]+'</span>'+
+    '<h2>#'+n.slot+' '+esc(n.key)+'</h2>'+
+    '<div class="meta">CLI: <code>'+esc(n.cli)+'</code> · argparse dest: <code>'+esc(n.dest)+
+      '</code> · 代码：<code>'+esc(n.lines)+'</code></div>'+
+    '<section class="block"><h3>读取的 tsdata 字段 (R)</h3><div>'+chips(n.read,"")+'</div>'+
+      '<div class="hint">'+esc(n.readNote)+'</div></section>'+
+    '<section class="block"><h3>写入的字段 (W)</h3><ul style="margin:0;padding-left:18px">'+writeRows+'</ul></section>'+
+    '<section class="block"><h3>短路 / 多值 / 缺字段</h3><table>'+
+      '<tr><th>未启用</th><td>'+esc(n.short)+'</td></tr>'+
+      '<tr><th>多值语义</th><td>'+esc(n.multi)+'</td></tr>'+
+      '<tr><th>缺该字段的行</th><td>'+esc(n.miss)+'</td></tr>'+
+      '<tr><th>判定逻辑</th><td>'+esc(n.logic)+'</td></tr>'+
+    '</table></section>'+
+    bug+
+    '<section class="block"><h3>手工复现命令</h3><pre class="cmd">'+esc(n.cmd)+'</pre>'+
+      '<div class="hint">预期 / 实测：'+esc(n.expect)+'</div></section>'+
+    '<div class="hint">字段读写全表见 docs/analysis/03-field-matrix.md；次序与短路见 01-chain-ordering.md；共享引用见 02-mutation-and-copy.md。</div>';
+}
+
+document.addEventListener("DOMContentLoaded", draw);
+// 若脚本在 DOMContentLoaded 之后执行也保险：
+if (document.readyState !== "loading"){ draw(); }
+</script>
+</body>
+</html>
